@@ -1,28 +1,56 @@
-import sun.security.util.BitArray;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ThreadLocalRandom;
 
 /*** Mensagens uteis no sistema ***/
 class Utils {
 
     /** Constantes **/
-    static final int tempo_espera_ack = 2000;
+    /*** Os tempos e as chances de perda podem mudar com propriedades do Java,
+     * por exemplo: java -Dtcpow.perda.cliente=0.5 Cliente. Os testes usam isso. ***/
+    static final int tempo_espera_ack = inteiro("tcpow.tempo.ack", 2000);
     static final int numero_de_conexao_inicial = 1;
-    static final int tempo_espera_servidor = 10000;
+    static final int tempo_espera_servidor = inteiro("tcpow.tempo.servidor", 10000);
     static final int tamanho_maximo_arquivo = 100000000;
     static final int tempo_verifica_conexoes = 50;
     static final int tamanho_pacote = 524;
     static final int tamanho_util_pacote = 512;
+    static final int tamanho_cabecalho = 12;
     static final int porta_MIN = 1023;
     static final int porta_MAX = 65535;
-    static final float chance_perda_cliente = 0.2f;
-    static final float chance_perda_servidor = 0f;
+    static final float chance_perda_cliente = probabilidade("tcpow.perda.cliente", 0.2f);
+    static final float chance_perda_servidor = probabilidade("tcpow.perda.servidor", 0f);
     static final int CWND_inicial = 512;
     static final int SS_THRESH_inicial = 10000;
     static final int numero_max_seq = 102400;
     static final int numero_sequencia_inicial_cliente = 12345;
     static final int numero_sequencia_inicial_servidor = 4321;
-    static final int tempo_espera_finack = 2000;
+    static final int tempo_espera_finack = inteiro("tcpow.tempo.finack", 2000);
+    static final int tempo_estouro_pacote = inteiro("tcpow.tempo.estouro", 1500);
+    static final int intervalo_envio = inteiro("tcpow.intervalo.envio", 100);
+
+    /*** Lê um inteiro positivo de uma propriedade do Java, ou usa o padrão ***/
+    static int inteiro(String nome, int padrao)
+    {
+        Integer valor = Integer.getInteger(nome);
+        return (valor == null || valor < 0) ? padrao : valor;
+    }
+    /*** Lê uma probabilidade entre 0 e 1 de uma propriedade do Java, ou usa o padrão ***/
+    static float probabilidade(String nome, float padrao)
+    {
+        String valor = System.getProperty(nome);
+        if (valor == null) return padrao;
+        try
+        {
+            float p = Float.parseFloat(valor);
+            return (p >= 0 && p <= 1) ? p : padrao;
+        } catch (NumberFormatException e)
+        {
+            return padrao;
+        }
+    }
 
     /*** Mensagens do Cliente ***/
     static final String prefixo_cliente = "[CLIENTE]-->";
@@ -143,6 +171,11 @@ class Utils {
     /*** Funçoes uteis ***/
     static Pacote cria_pacote(byte[] data)
     {
+        return cria_pacote(data, data.length);
+    }
+    /*** Lê um pacote recebido. tamanho é o numero de bytes recebidos (DatagramPacket.getLength) ***/
+    static Pacote cria_pacote(byte[] data, int tamanho)
+    {
         Pacote retorno = new Pacote();
 
         byte[] seq = new byte[4];
@@ -170,8 +203,10 @@ class Utils {
         retorno.setSYN(isSet(rest[1], 1));
         retorno.setFIN(isSet(rest[1], 0));
 
-        byte[] payload = new byte[512];
-        System.arraycopy(data, 12 , payload, 0 , 512);
+        int tamanho_conteudo = Math.max(0, Math.min(tamanho, data.length) - tamanho_cabecalho);
+        tamanho_conteudo = Math.min(tamanho_conteudo, tamanho_util_pacote);
+        byte[] payload = new byte[tamanho_conteudo];
+        System.arraycopy(data, tamanho_cabecalho, payload, 0, tamanho_conteudo);
         retorno.setConteudo(payload);
         bb.clear();
 
@@ -187,46 +222,68 @@ class Utils {
         byte[] seq_n = ByteBuffer.allocate(4).putInt(pac.getNumero_de_sequencia()).array();
         byte[] ack_n = ByteBuffer.allocate(4).putInt(pac.getNumero_ack()).array();
         byte[] id = ByteBuffer.allocate(2).putShort(pac.getId()).array();
-        boolean ack = pac.isACK();
-        boolean syn = pac.isSYN();
-        boolean fin = pac.isFIN();
 
-        BitArray rec = new BitArray(16);
-        rec.set(0,false);
-        rec.set(1,false);
-        rec.set(2,false);
-        rec.set(3,false);
-        rec.set(4,false);
-        rec.set(5,false);
-        rec.set(6,false);
-        rec.set(7,false);
-        rec.set(8,false);
-        rec.set(9,false);
-        rec.set(10,false);
-        rec.set(11,false);
-        rec.set(12,false);
-        rec.set(13, ack);
-        rec.set(14, syn);
-        rec.set(15, fin);
+        /*** Flags nos 3 ultimos bits do cabeçalho: ACK, SYN e FIN ***/
+        byte flags = 0;
+        if (pac.isACK()) flags |= 1 << 2;
+        if (pac.isSYN()) flags |= 1 << 1;
+        if (pac.isFIN()) flags |= 1;
 
-        byte[] rec_ = rec.toByteArray();
+        int tamanho_conteudo = pac.getConteudo() == null ? 0 : Math.min(pac.getConteudo().length, tamanho_util_pacote);
+        /*** O pacote tem o tamanho real do conteudo, sem preenchimento ***/
+        byte[] data = new byte[tamanho_cabecalho + tamanho_conteudo];
+        System.arraycopy(seq_n, 0, data, 0, seq_n.length);
+        System.arraycopy(ack_n, 0, data, 4, ack_n.length);
+        System.arraycopy(id, 0, data, 8, id.length);
+        data[11] = flags;
+        if (tamanho_conteudo > 0) System.arraycopy(pac.getConteudo(), 0, data, tamanho_cabecalho, tamanho_conteudo);
+        return data;
+    }
 
-        byte[] cabecalho = new byte[12];
-
-        System.arraycopy(seq_n, 0, cabecalho, 0, seq_n.length);
-        System.arraycopy(ack_n, 0, cabecalho, 4, ack_n.length);
-        System.arraycopy(id, 0, cabecalho, 8, id.length);
-        System.arraycopy(rec_, 0, cabecalho, 10, rec_.length);
-
-        if(pac.getConteudo() != null)
+    /*** Divide um arquivo em partes de no maximo 512 bytes.
+     * Um arquivo vazio vira uma parte vazia, porque o handshake leva a primeira parte. ***/
+    static List<byte[]> divide_em_pacotes(byte[] arquivo)
+    {
+        List<byte[]> partes = new ArrayList<>();
+        for (int inicio = 0; inicio < arquivo.length; inicio += tamanho_util_pacote)
         {
-            byte[] data = new byte[524];
-            System.arraycopy(cabecalho, 0 , data , 0, cabecalho.length);
-            System.arraycopy(pac.getConteudo(), 0 , data , 12 , pac.getConteudo().length);
-            return data;
+            int fim = Math.min(inicio + tamanho_util_pacote, arquivo.length);
+            byte[] parte = new byte[fim - inicio];
+            System.arraycopy(arquivo, inicio, parte, 0, parte.length);
+            partes.add(parte);
         }
+        if (partes.isEmpty()) partes.add(new byte[0]);
+        return partes;
+    }
 
-        return cabecalho;
+    /*** Novo CWND depois de um ACK: partida lenta abaixo do SS_THRESH, e
+     * prevenção de congestionamento (cerca de 1 pacote por RTT) acima dele ***/
+    static int proximo_cwnd(int cwnd, int ss_thresh)
+    {
+        if (cwnd < ss_thresh) return cwnd + tamanho_util_pacote;
+        return cwnd + Math.max(1, (tamanho_util_pacote * tamanho_util_pacote) / cwnd);
+    }
+
+    /*** Calcula o proximo numero de sequencia a ser usado ***/
+    static int proximo_sequencia(int atual)
+    {
+        if (atual + tamanho_util_pacote > numero_max_seq) return (atual + tamanho_util_pacote) - numero_max_seq;
+        else return atual + tamanho_util_pacote;
+    }
+
+    /*** Simula a perda de um pacote com a probabilidade passada ***/
+    static boolean vai_falhar(float porcentagem)
+    {
+        return ThreadLocalRandom.current().nextFloat() < porcentagem;
+    }
+
+    /*** Testa se o nome do diretorio é valido para ser criado ***/
+    static boolean diretorio_valido(String analisar)
+    {
+        return !(analisar.contains("/") || analisar.contains("\\") || analisar.contains("|")
+                || analisar.contains("*") || analisar.contains("?")
+                || analisar.contains("\"") || analisar.contains("<")
+                || analisar.contains(">") || analisar.contains(":"));
     }
 
 }

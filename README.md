@@ -26,26 +26,28 @@ Each packet has 524 bytes: a 12-byte header and up to 512 bytes of file data.
 | Flags | 2 bytes | ACK, SYN, and FIN. |
 | Data | 512 bytes | Part of the file. |
 
+The last packet of a file carries only the remaining bytes. The receiver uses the length of the datagram to know how much data a packet has.
+
 ## Congestion control
 
-The window starts at 512 bytes, which is one packet. Each acknowledged packet adds 512 bytes while the window is below `SS_THRESH`, which starts at 10,000 bytes (slow start). When a packet timer expires, the client sets `SS_THRESH` to the current window and the window back to 512 bytes. Then it sends again from the lost packet.
+The window starts at 512 bytes, which is one packet. While the window is below `SS_THRESH`, which starts at 10,000 bytes, each acknowledged packet adds 512 bytes (slow start). Above `SS_THRESH`, each ACK adds `512 × 512 / CWND` bytes, which is about one packet per round trip (congestion avoidance). When a packet timer expires, the client sets `SS_THRESH` to the current window and the window back to 512 bytes. Then it sends again from the lost packet.
 
 ## Requirements
 
-You need a JDK 9 or later. The code uses the internal class `sun.security.util.BitArray`. For this reason, the commands below need the `--add-exports` option.
+You need a JDK 11 or later.
 
 ## Getting started
 
 1. Compile the code.
 
    ```bash
-   javac --add-exports java.base/sun.security.util=ALL-UNNAMED -d out src/*.java
+   javac -encoding UTF-8 -d out src/*.java
    ```
 
 2. Start the server.
 
    ```bash
-   java --add-exports java.base/sun.security.util=ALL-UNNAMED -cp out Servidor
+   java -cp out Servidor
    ```
 
    The server asks for a port and an output folder. Type them on one line, for example `5555 recebidos`. The folder name must not contain `/`, `\`, `|`, `:`, `"`, `<`, `>`, `?`, or `*`. If the folder does not exist, the server creates it in the current directory.
@@ -53,7 +55,7 @@ You need a JDK 9 or later. The code uses the internal class `sun.security.util.B
 3. In another terminal, in the same directory, start the client.
 
    ```bash
-   java --add-exports java.base/sun.security.util=ALL-UNNAMED -cp out Cliente
+   java -cp out Cliente
    ```
 
    The client asks for the server address, the port, and the file to send. For example, type `localhost 5555 photo.jpg`. The repository includes `photo.jpg` as a sample file.
@@ -78,16 +80,50 @@ The client and the server log each step. The beginning of a transfer looks like 
 
 ## Configuration
 
-The constants are in `src/Utils.java`. Change them and compile again.
+You can change the loss rates and the timers with Java system properties. For example, this command runs the client with 50% loss:
 
-| Constant | Default | Description |
+```bash
+java -Dtcpow.perda.cliente=0.5 -cp out Cliente
+```
+
+| Property | Default | Description |
 | --- | --- | --- |
-| `chance_perda_cliente` | `0.2f` | Share of client data packets that are dropped on purpose. |
-| `chance_perda_servidor` | `0f` | Share of server packets that are dropped on purpose. |
-| `tempo_espera_ack` | `2000` | Time in milliseconds that the client waits for an ACK. |
-| `tempo_espera_servidor` | `10000` | Time in milliseconds before a silent connection closes. |
-| `CWND_inicial` | `512` | First congestion window, in bytes. |
-| `SS_THRESH_inicial` | `10000` | First slow-start threshold, in bytes. |
+| `tcpow.perda.cliente` | `0.2` | Share of client data packets that are dropped on purpose, from 0 to 1. |
+| `tcpow.perda.servidor` | `0` | Share of server packets that are dropped on purpose, from 0 to 1. |
+| `tcpow.tempo.ack` | `2000` | Time in milliseconds that the client waits for an ACK. |
+| `tcpow.tempo.estouro` | `1500` | Retransmission timer of each packet, in milliseconds. |
+| `tcpow.tempo.finack` | `2000` | Time in milliseconds that the client waits for the FIN-ACK. |
+| `tcpow.tempo.servidor` | `10000` | Time in milliseconds before a silent connection closes. |
+| `tcpow.intervalo.envio` | `100` | Pause in milliseconds after each packet that the client sends. |
+
+The other constants, such as the first window (`CWND_inicial`, 512 bytes) and the first threshold (`SS_THRESH_inicial`, 10,000 bytes), are in `src/Utils.java`.
+
+## Tests
+
+The tests use no external libraries. A small runner in `test/TestRunner.java` finds the methods with the `@Test` annotation. To compile everything and run all the tests, use this command:
+
+```bash
+./run-tests.sh
+```
+
+To run only some tests, pass part of their name, for example `./run-tests.sh EndToEnd`.
+
+| Test class | What it checks |
+| --- | --- |
+| `PacketCodecTest` | The bytes on the wire: header layout, flags, every content size, and round trips of random packets. |
+| `PacoteTest` | The packet fields. |
+| `SplitFileTest` | The split of a file into packets, for every size up to 3,000 bytes. |
+| `CongestionWindowTest` | Slow start, congestion avoidance, and that an ACK never shrinks the window. |
+| `SequenceNumberTest` | The wrap-around of the sequence numbers after 102,400 bytes. |
+| `SettingsTest` | The system properties and their limits. |
+| `LossSimulationTest` | The simulated loss rates, also from many threads. |
+| `DirectoryNameTest` | The check of the output folder name. |
+| `MessagesTest` | The log messages. |
+| `EstadoTest`, `ConexaoTest` | The packet timer and the connection timeout. |
+| `InputValidationTest` | The error messages for wrong ports, folders, files, and hosts. It starts the real programs. |
+| `EndToEndTest` | Real transfers between `Servidor` and `Cliente` on localhost, byte by byte: empty, small, and large files, up to 50% loss, loss on the server, and several clients at the same time. |
+
+The end-to-end tests use short timers, so a full run takes about one minute. GitHub Actions runs the tests with JDK 11, 17, and 21 on every push.
 
 ## Project structure
 
@@ -98,14 +134,14 @@ The constants are in `src/Utils.java`. Change them and compile again.
 | `src/conexao.java` | State and timeout of one server connection. |
 | `src/Estado.java` | State and retransmission timer of one packet in the window. |
 | `src/Pacote.java` | Packet fields and flags. |
-| `src/Utils.java` | Constants, log messages, and the conversion between packets and bytes. |
+| `src/Utils.java` | Constants, settings, log messages, the conversion between packets and bytes, and the congestion window rule. |
+| `test/` | Tests and the test runner. |
+| `run-tests.sh` | Compiles the code and runs the tests. |
 
 ## Known limitations
 
-- The received file can be larger than the original. The server writes the last packet with its full 512 bytes, so the end of the file gets extra spaces. The data before the padding is identical to the original.
-- Above `SS_THRESH`, the code sets `CWND = 512 × 512 / CWND`, so the window shrinks to one packet instead of growing slowly (congestion avoidance).
 - The server accepts only a folder name, not a path, for the output folder.
-- The code uses an internal JDK class, so it needs the `--add-exports` option.
+- A retransmitted SYN can create a second connection on the server. The second connection closes after the connection timeout.
 
 ## Author
 

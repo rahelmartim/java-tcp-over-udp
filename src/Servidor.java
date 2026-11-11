@@ -69,7 +69,7 @@ public class Servidor extends Thread
     public static void main(String[] args)
     {
         NUMERO_CONEXAO = Utils.numero_de_conexao_inicial;
-        conexoes = new Hashtable<>();
+        conexoes = new java.util.concurrent.ConcurrentHashMap<>();
         try
         {
             /*** LOG de inicio do servidor ***/
@@ -84,7 +84,7 @@ public class Servidor extends Thread
             Integer _porta = Integer.parseInt(inicio.split(" ")[0]);
             String _diretorio_saida = inicio.split(" ")[1];
             /*** Verificação de erros na inicialização do servidor ***/
-            if(_porta  < Utils.porta_MIN || _porta > Utils.porta_MAX || inicio.split(" ").length > 2 || !diretorio_valido(_diretorio_saida))
+            if(_porta  < Utils.porta_MIN || _porta > Utils.porta_MAX || inicio.split(" ").length > 2 || !Utils.diretorio_valido(_diretorio_saida))
             {
                 if(_porta < Utils.porta_MIN) System.out.println(Utils.prefixo_servidor + Utils.porta_reservada);
                 else if(_porta > Utils.porta_MAX) System.out.println(Utils.prefixo_servidor + Utils.porta_invalida);
@@ -100,15 +100,15 @@ public class Servidor extends Thread
             /*** Log ***/
             System.out.println(Utils.prefixo_servidor + Utils.dados_definidos_servidor(_porta, diretorio_saida));
             System.out.println(Utils.prefixo_servidor + Utils.servidor_iniciado(_porta));
-            /*** Dados recebidos ***/
-            byte[] incomingData = new byte[Utils.tamanho_pacote *2];
             /*** Recebe os pacotes ***/
             //noinspection InfiniteLoopStatement
             while (true)
             {
                 /*** Checa se alguma conexão expirou***/
                 verifica_conexoes();
-                /*** Recebe um pacote ***/
+                /*** Recebe um pacote. Cada pacote tem o seu proprio buffer, porque
+                 * a thread que o trata pode rodar enquanto o proximo pacote chega ***/
+                byte[] incomingData = new byte[Utils.tamanho_pacote * 2];
                 DatagramPacket incomingPacket_ = new DatagramPacket(incomingData, incomingData.length);
                 socket.setSoTimeout(Utils.tempo_verifica_conexoes);
                 try
@@ -140,13 +140,16 @@ public class Servidor extends Thread
         {
             byte[] data = this.incomingPacket.getData();
             /*** Transforma os bytes em uma instancia de pacote ***/
-            this.pacote = Utils.cria_pacote(data);
+            this.pacote = Utils.cria_pacote(data, this.incomingPacket.getLength());
             /*** Obtem o endereço/porta do cliente ***/
             InetAddress IPAddress = this.incomingPacket.getAddress();
             int port = this.incomingPacket.getPort();
             /*** Se o pacote for de inicio de conexão ***/
             if(pacote.isSYN())
             {
+              /*** Um cliente por vez recebe um ID de conexão ***/
+              synchronized (conexoes)
+              {
                 /*** Cria um pacote de resposta ***/
                 Pacote handshake2 = new Pacote();
                 handshake2.setNumero_de_sequencia(Utils.numero_sequencia_inicial_servidor);
@@ -162,7 +165,7 @@ public class Servidor extends Thread
                 /*** Pacote para enviar ***/
                 DatagramPacket sendPacket = new DatagramPacket(data2, data2.length, IPAddress, port);
                 /*** Envia o pacote ***/
-                if(!vai_falhar(Utils.chance_perda_servidor))
+                if(!Utils.vai_falhar(Utils.chance_perda_servidor))
                 {
                     socket.send(sendPacket);
                     System.out.println(Utils.prefixo_servidor + Utils.handshake(2, handshake2));
@@ -172,10 +175,21 @@ public class Servidor extends Thread
                     conexoes.put(NUMERO_CONEXAO, cliente_con);
                     NUMERO_CONEXAO++;
                 }else System.out.println(Utils.prefixo_servidor + Utils.pacote_perdido);
+              }
 
             }else{
             /*** Cria o pacote no lado servidor ***/
                 /*** Se não for um pacote de finalizar conexão, é um de dados ***/
+                conexao con = conexoes.get((int) pacote.getId());
+                if (con == null)
+                {
+                    /*** Pacote de uma conexão que não existe mais: descarta ***/
+                    return;
+                }
+                /*** Um pacote por vez em cada conexão. Sem isso, um pacote e o seu
+                 * reenvio podem ser aceitos ao mesmo tempo por duas threads ***/
+                synchronized (con)
+                {
                 if(!pacote.isFIN())
                 {
                     /*** Checa se é o esperado
@@ -202,7 +216,7 @@ public class Servidor extends Thread
                         /*** Se for o esperado ***/
                         conexoes.get((int)pacote.getId()).add_parte(pacote.getConteudo());
                         conexoes.get((int)pacote.getId()).desativa_timer();
-                        conexoes.get((int)pacote.getId()).setProx_esperado(proximo_sequencia(pacote.getNumero_de_sequencia()));
+                        conexoes.get((int)pacote.getId()).setProx_esperado(Utils.proximo_sequencia(pacote.getNumero_de_sequencia()));
                         Pacote pacote_r = new Pacote();
                         pacote_r.setACK(true);
                         pacote_r.setNumero_ack(pacote.getNumero_de_sequencia());
@@ -214,7 +228,7 @@ public class Servidor extends Thread
                         DatagramPacket sendPacket = new DatagramPacket(data2, data2.length, IPAddress, port);
                         /*** Envia o pacote ***/
                         /*** Há uma chance de perder o pacote ***/
-                        if(!vai_falhar(Utils.chance_perda_servidor))
+                        if(!Utils.vai_falhar(Utils.chance_perda_servidor))
                         {
                             socket.send(sendPacket);
                             System.out.println(Utils.prefixo_servidor + Utils.pacote_enviado(pacote_r));
@@ -251,7 +265,7 @@ public class Servidor extends Thread
                     terminar_con2.setFIN(true);
                     terminar_con2.setACK(false);
                     /*** Dados do pacote para enviar ***/
-                    byte[] data4 = Utils.cria_pacote(terminar_con);
+                    byte[] data4 = Utils.cria_pacote(terminar_con2);
                     /*** Pacote para enviar ***/
                     DatagramPacket sendPacket3 = new DatagramPacket(data4, data4.length, IPAddress, port);
                     /*** Envia o pacote ***/
@@ -261,27 +275,10 @@ public class Servidor extends Thread
                         System.out.println(Utils.prefixo_servidor + Utils.conexao_encerrada((int)pacote.getId()));
                     }
                     }
+                }
             }
-        } catch (IOException | IllegalAccessException | InstantiationException e) {
+        } catch (IOException e) {
             e.printStackTrace();
         }
-    }
-    /*** Calcula o proximo numero de sequencia a ser usado ***/
-    private int proximo_sequencia(int atual){
-        if (atual + Utils.tamanho_util_pacote > Utils.numero_max_seq) return (atual + Utils.tamanho_util_pacote) - Utils.numero_max_seq;
-        else                                    return atual + Utils.tamanho_util_pacote;
-
-    }
-    /*** Testa se o nome do diretorio é valido para ser criado ***/
-    private static boolean diretorio_valido(String analisar)
-    {
-        return !(analisar.contains("/") || analisar.contains("\\") || analisar.contains("|")
-                || analisar.contains("*") || analisar.contains("?")
-                || analisar.contains("\"") || analisar.contains("<")
-                || analisar.contains(">") || analisar.contains(":"));
-    }
-    private static boolean vai_falhar(float porcentagem) throws IllegalAccessException, InstantiationException {
-        float resultado = Random.class.newInstance().nextFloat();
-        return resultado < porcentagem;
     }
 }
