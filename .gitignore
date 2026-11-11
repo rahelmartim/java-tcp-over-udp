@@ -1,0 +1,14 @@
+# Compiled classes
+*.class
+out/
+bin/
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+
+# Files that the server receives during a test
+recebidos/
+
+.DS_Store
