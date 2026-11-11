@@ -27,7 +27,7 @@ class conexao
             {
                 ativa = false;
             }
-        }, 10000, 10000);
+        }, Utils.tempo_espera_servidor, Utils.tempo_espera_servidor);
 
         this.arquivo = null;
         this.ativa = true;
@@ -43,7 +43,7 @@ class conexao
             {
                 ativa = false;
             }
-        }, 10000, 10000);
+        }, Utils.tempo_espera_servidor, Utils.tempo_espera_servidor);
     }
     void desativa_timer()
     {

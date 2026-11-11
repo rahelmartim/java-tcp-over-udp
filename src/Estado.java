@@ -31,7 +31,7 @@ public class Estado {
             {
                 estouro = true;
             }
-        }, 1500, 1500);
+        }, Utils.tempo_estouro_pacote, Utils.tempo_estouro_pacote);
     }
     void desativa_timer()
     {

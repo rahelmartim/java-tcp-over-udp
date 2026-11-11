@@ -90,7 +90,7 @@ public class Cliente
                     socket.receive(incomingPacket);
                     byte[] data2 = incomingPacket.getData();
                     /*** Transforma os bytes em uma instancia de pacote ***/
-                    Pacote pacote_ = Utils.cria_pacote(data2);
+                    Pacote pacote_ = Utils.cria_pacote(data2, incomingPacket.getLength());
                     verifica_servidor();
                     if(pacote_.isSYN() && pacote_.getNumero_ack() == this.ultimo_sequencia_enviado)
                     {
@@ -110,12 +110,14 @@ public class Cliente
         /*** Cria o arquivo ***/
         getArquivo();
         boolean checado2 = false;
+        /*** O numero de sequencia é o mesmo em todas as tentativas, para que o
+         * servidor reconheça um reenvio deste pacote ***/
+        this.ultimo_sequencia_enviado += 1;
         while (!checado2)
         {
             meu_pacote = pacotes.get(0);
             /*** Cria a instancia da classe arquivo para o envio ***/
-            meu_pacote.setNumero_de_sequencia(this.ultimo_sequencia_enviado + 1);
-            this.ultimo_sequencia_enviado += 1;
+            meu_pacote.setNumero_de_sequencia(this.ultimo_sequencia_enviado);
             meu_pacote.setNumero_ack(this.ultimo_ack);
             meu_pacote.setId((short) this.ID);
             meu_pacote.setACK(true);
@@ -140,7 +142,7 @@ public class Cliente
                 byte[] data4 = incomingPacket2.getData();
                 verifica_servidor();
                 /*** Transforma os bytes em uma instancia de arquivo ***/
-                Pacote pacote_2 = Utils.cria_pacote(data4);
+                Pacote pacote_2 = Utils.cria_pacote(data4, incomingPacket2.getLength());
                 if(pacote_2.isACK() && pacote_2.getNumero_ack() == this.ultimo_sequencia_enviado )
                 {
                     System.out.println(Utils.prefixo_servidor + Utils.pacote_recebido(pacote_2));
@@ -183,7 +185,7 @@ public class Cliente
                     if(pacotes_enviados + enviados >= pacotes.size())   break;
                     meu_pacote = pacotes.get(pacotes_enviados + enviados);
                     meu_pacote.setId((short) this.ID);
-                    this.ultimo_sequencia_enviado = proximo_sequencia(this.ultimo_sequencia_enviado);
+                    this.ultimo_sequencia_enviado = Utils.proximo_sequencia(this.ultimo_sequencia_enviado);
                     meu_pacote.setNumero_de_sequencia(this.ultimo_sequencia_enviado);
                     meu_pacote.setNumero_ack(this.ultimo_ack);
                     janela.get(pacotes_enviados + enviados).setNumero_sequencia(this.ultimo_sequencia_enviado);
@@ -192,7 +194,7 @@ public class Cliente
                     /*** Pacote para enviar ***/
                     DatagramPacket sendPacket = new DatagramPacket(data, data.length, IPAddress, this.porta);
                     /*** Envia o arquivo ***/
-                    if(!vai_falhar(Utils.chance_perda_cliente))
+                    if(!Utils.vai_falhar(Utils.chance_perda_cliente))
                     {
                         socket.send(sendPacket);
                         System.out.println(Utils.prefixo_cliente + Utils.pacote_enviado(meu_pacote));
@@ -207,7 +209,7 @@ public class Cliente
                     /*** Tempo de espera minimo ***/
                     try
                     {
-                        Thread.sleep(100);
+                        Thread.sleep(Utils.intervalo_envio);
                     } catch (InterruptedException e)
                     {
                         e.printStackTrace();
@@ -227,7 +229,7 @@ public class Cliente
                         socket.receive(incomingPacket2);
                         byte[] data4 = incomingPacket2.getData();
                         /*** Transforma os bytes em uma instancia de arquivo ***/
-                        Pacote pacote_2 = Utils.cria_pacote(data4);
+                        Pacote pacote_2 = Utils.cria_pacote(data4, incomingPacket2.getLength());
                         /*** LOG ***/
                         System.out.println(Utils.janela(enviar, this.CWND, this.SS_THRESH, this.janela));
                         int prox= 0;
@@ -250,15 +252,7 @@ public class Cliente
                             {
                                 desativa_s_timer();
                                 recebidos++;
-                                if (this.CWND < this.SS_THRESH) this.CWND += 512;
-                                else
-                                    {
-                                    this.CWND = (512 * 512)/this.CWND;
-                                    if (this.CWND < 512){
-                                        this.CWND = 512;
-//                                        this.SS_THRESH = 10000;
-                                    }
-                                }
+                                this.CWND = Utils.proximo_cwnd(this.CWND, this.SS_THRESH);
                             }
                             verifica(contador);
                             this.ultimo_ack = pacote_2.getNumero_de_sequencia()+1;
@@ -289,7 +283,7 @@ public class Cliente
         } catch (SocketException e)
         {
             System.out.println(Utils.prefixo_cliente + Utils.fim_de_conexao);
-        } catch (IOException | ClassNotFoundException | InstantiationException | IllegalAccessException e)
+        } catch (IOException | ClassNotFoundException e)
         {
             e.printStackTrace();
         }
@@ -336,12 +330,6 @@ public class Cliente
         if(checar) return retorno;
         else    return -69;
     }
-    /*** Calcula o proximo numero de sequencia a ser usado ***/
-    private int proximo_sequencia(int atual){
-        if (atual + Utils.tamanho_util_pacote > Utils.numero_max_seq) return (atual + Utils.tamanho_util_pacote) - Utils.numero_max_seq;
-        else                                    return atual + Utils.tamanho_util_pacote;
-
-    }
     /*** Finaliza a conexão, após o arquivo ter sido transferido ***/
     private void terminar_conexao()
     {
@@ -382,7 +370,7 @@ public class Cliente
                 }
                 byte[] data4 = incomingPacket2.getData();
                 /*** Transforma os bytes em uma instancia de arquivo ***/
-                Pacote pacote_2 = Utils.cria_pacote(data4);
+                Pacote pacote_2 = Utils.cria_pacote(data4, incomingPacket2.getLength());
                 verifica_servidor();
                 if (pacote_2.isACK() && pacote_2.isFIN())
                 {
@@ -408,7 +396,7 @@ public class Cliente
                 socket.receive(incomingPacket2);
                 byte[] data4 = incomingPacket2.getData();
                 /*** Transforma os bytes em uma instancia de arquivo ***/
-                Pacote pacote_2 = Utils.cria_pacote(data4);
+                Pacote pacote_2 = Utils.cria_pacote(data4, incomingPacket2.getLength());
                 verifica_servidor();
                 System.out.println(Utils.pacote_recebido(pacote_2));
             if (pacote_2.isFIN())
@@ -486,51 +474,17 @@ public class Cliente
                     System.out.println(Utils.prefixo_cliente + Utils.arquivo_muito_grande);
                     System.exit(0);
                 }
-                Float numero_pacotes_ = ((float)len / Utils.tamanho_util_pacote);
-                int numero_pacotes = numero_pacotes_.intValue();
-                int ultimo_pacote = (int) len - (Utils.tamanho_util_pacote * numero_pacotes);
-                int read = 0;
-                /***
-                1500
-                fileBytes[1500]
-                p[512]
-                p[512]
-                p[476]len - (512 * numero_pacotes.intValue())
-                 ***/
                 byte[] fileBytes = new byte[(int)len];
-                while (read < fileBytes.length)
+                diStream.readFully(fileBytes);
+                diStream.close();
+                /*** Divide o arquivo em pacotes de até 512 bytes. O ultimo pacote
+                 * leva só o resto do arquivo, sem preenchimento ***/
+                for (byte[] parte : Utils.divide_em_pacotes(fileBytes))
                 {
-                    fileBytes[read] = diStream.readByte();
-                    read++;
-                }
-                int i = 0;
-                int pacotes_feitos = 0;
-                while ( pacotes_feitos < numero_pacotes)
-                {
-                    byte[] mini_pacote = new byte[Utils.tamanho_util_pacote];
-                    for (int k = 0; k < Utils.tamanho_util_pacote; k++)
-                    {
-                        mini_pacote[k] = fileBytes[i];
-                        i++;
-                    }
                     Pacote pacote_ = new Pacote();
-                    pacote_.setConteudo(mini_pacote);
+                    pacote_.setConteudo(parte);
                     this.pacotes.add(pacote_);
-                    pacotes_feitos++;
                 }
-                byte[] ultimo_mini_pacote = new byte[ultimo_pacote];
-                int ultimo_indice = ultimo_mini_pacote.length;
-                for (int j = 0; j < ultimo_mini_pacote.length; j++)
-                {
-                    ultimo_mini_pacote[j] = fileBytes[i];
-                    i++;
-                }
-                byte[] ultimo_mini_pacote2 = new byte[512];
-                System.arraycopy(ultimo_mini_pacote, 0, ultimo_mini_pacote2, 0, ultimo_mini_pacote.length);
-                for(int h = ultimo_indice; h < 512; h++ ) ultimo_mini_pacote2[h] = " ".getBytes()[0];
-                Pacote pacote_ = new Pacote();
-                pacote_.setConteudo(ultimo_mini_pacote2);
-                this.pacotes.add(pacote_);
                 this.janela = new HashMap<>();
                 for (int iterator = 0; iterator < this.pacotes.size(); iterator++)  janela.put(iterator, new Estado());
             } catch (Exception e)
@@ -543,11 +497,6 @@ public class Cliente
             System.out.println(Utils.prefixo_cliente + Utils.arquivo_inexistente);
             System.exit(0);
         }
-    }
-    /*** Função que calcula falha, pois meu pc é muito ruim ***/
-    private static boolean vai_falhar(float porcentagem) throws IllegalAccessException, InstantiationException {
-        float resultado = Random.class.newInstance().nextFloat();
-        return resultado < porcentagem;
     }
     /*** Main ***/
     public static void main(String[] args)
